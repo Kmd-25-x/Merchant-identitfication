@@ -1,0 +1,303 @@
+<style>
+  #grid-wrap { position: relative; width: 100%; }
+  #grid-canvas { display: block; width: 100%; cursor: crosshair; }
+  .ctrl-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 12px 0 0; font-size: 13px; color: var(--color-text-secondary); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 500; border: 0.5px solid; }
+  .pill-clothing { background: #EEEDFE; color: #3C3489; border-color: #534AB7; }
+  .pill-food     { background: #FAEEDA; color: #633806; border-color: #854F0B; }
+  .pill-jewel    { background: #E1F5EE; color: #085041; border-color: #0F6E56; }
+  .pill-elec     { background: #E6F1FB; color: #0C447C; border-color: #185FA5; }
+  .pill-txn      { background: #FCEBEB; color: #791F1F; border-color: #A32D2D; }
+  .info-card { background: var(--color-background-secondary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 12px 16px; margin: 12px 0 0; font-size: 13px; }
+  .info-row { display: flex; justify-content: space-between; padding: 3px 0; }
+  .info-label { color: var(--color-text-secondary); }
+  .info-val { font-weight: 500; color: var(--color-text-primary); }
+  .score-bar-bg { height: 6px; border-radius: 3px; background: var(--color-border-tertiary); margin-top: 6px; }
+  .score-bar { height: 6px; border-radius: 3px; transition: width 0.3s; }
+</style>
+
+<h2 class="sr-only">Interactive H3 hexagonal grid demo showing merchant identification in a dense Indian bazaar</h2>
+
+<div id="grid-wrap">
+  <canvas id="grid-canvas" height="360"></canvas>
+</div>
+
+<div class="ctrl-row">
+  <span>Resolution</span>
+  <input type="range" min="1" max="3" step="1" value="2" id="res-slider" style="width:120px">
+  <span id="res-label" style="font-weight:500;color:var(--color-text-primary);min-width:80px">Medium (R9)</span>
+  <span style="margin-left:auto; display:flex; gap:8px; flex-wrap:wrap;">
+    <span class="pill pill-clothing">Clothing</span>
+    <span class="pill pill-food">Food</span>
+    <span class="pill pill-jewel">Jewellery</span>
+    <span class="pill pill-elec">Electronics</span>
+    <span class="pill pill-txn">Your transaction</span>
+  </span>
+</div>
+
+<div class="info-card" id="info-card">
+  <div class="info-row"><span class="info-label">Click a shop on the map to see confidence scoring</span></div>
+</div>
+
+<script>
+const canvas = document.getElementById('grid-canvas');
+const ctx = canvas.getContext('2d');
+
+const shops = [
+  { name:'Rajaratn Sarees', type:'clothing', x:0.38, y:0.42, upi:'RAJARATN SAREES' },
+  { name:'Sharma Sweets', type:'food', x:0.52, y:0.38, upi:'SHARMA SWTS' },
+  { name:'Meena Jewellers', type:'jewel', x:0.44, y:0.60, upi:'MEENA JWLRS' },
+  { name:'Quick Electronics', type:'elec', x:0.28, y:0.55, upi:'QUICK ELEC' },
+  { name:'Laxmi Sarees', type:'clothing', x:0.62, y:0.52, upi:'LAXMI SAREES' },
+  { name:'Mohan Chaat', type:'food', x:0.35, y:0.28, upi:'MOHAN CHAAT' },
+  { name:'Om Textiles', type:'clothing', x:0.58, y:0.30, upi:'OM TEXTILES' },
+  { name:'Patel Mobiles', type:'elec', x:0.68, y:0.40, upi:'PATEL MOBILES' },
+  { name:'Gupta Mishthan', type:'food', x:0.50, y:0.65, upi:'GUPTA MISTHAN' },
+  { name:'Silver Palace', type:'jewel', x:0.25, y:0.42, upi:'SILVER PALACE' },
+];
+
+const txn = { x: 0.38, y: 0.42, upi: 'RAJARATN SAREES', amount: 5000 };
+
+const colors = {
+  clothing: { fill:'#EEEDFE', stroke:'#534AB7', text:'#3C3489' },
+  food:     { fill:'#FAEEDA', stroke:'#854F0B', text:'#633806' },
+  jewel:    { fill:'#E1F5EE', stroke:'#0F6E56', text:'#085041' },
+  elec:     { fill:'#E6F1FB', stroke:'#185FA5', text:'#0C447C' },
+};
+
+const resolutions = [
+  { label:'Coarse (R8)', size: 0.55, name:'R8' },
+  { label:'Medium (R9)', size: 0.32, name:'R9' },
+  { label:'Fine (R10)',  size: 0.18, name:'R10' },
+];
+
+let currentRes = 1;
+let selectedShop = null;
+let W, H;
+
+function hexPoints(cx, cy, r) {
+  const pts = [];
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 180 * (60 * i - 30);
+    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+function drawHex(cx, cy, r, fill, stroke, alpha) {
+  const pts = hexPoints(cx, cy, r);
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < 6; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function pointInHex(px, py, cx, cy, r) {
+  return Math.sqrt((px-cx)**2 + (py-cy)**2) < r * 0.9;
+}
+
+function draw() {
+  W = canvas.offsetWidth;
+  H = 360;
+  canvas.width = W;
+  canvas.height = H;
+
+  const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const bgColor = isDark ? '#1a1a18' : '#f7f5f0';
+  const roadColor = isDark ? '#2a2a28' : '#e8e5de';
+  const textPrimary = isDark ? '#e0ddd4' : '#2c2c2a';
+
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, W, H);
+
+  for (let i = 0; i < 6; i++) {
+    ctx.strokeStyle = roadColor;
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    const x1 = (i * W/5) % W;
+    ctx.moveTo(x1, 0); ctx.lineTo(x1 + 60, H);
+    ctx.stroke();
+  }
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    const y1 = i * H/3;
+    ctx.moveTo(0, y1); ctx.lineTo(W, y1 + 30);
+    ctx.stroke();
+  }
+
+  const res = resolutions[currentRes];
+  const hexR = res.size * Math.min(W, H) / 2;
+
+  const cols = Math.ceil(W / (hexR * 1.73)) + 2;
+  const rows = Math.ceil(H / (hexR * 1.5)) + 2;
+
+  for (let row = -1; row < rows; row++) {
+    for (let col = -1; col < cols; col++) {
+      const offset = (row % 2 === 0) ? 0 : hexR * Math.sqrt(3) / 2;
+      const cx = col * hexR * Math.sqrt(3) + offset;
+      const cy = row * hexR * 1.5;
+      drawHex(cx, cy, hexR, 'transparent', isDark ? '#3a3a36' : '#ccc8be', 1);
+    }
+  }
+
+  const txX = txn.x * W;
+  const txY = txn.y * H;
+
+  let txHexCX, txHexCY;
+  let minD = Infinity;
+  for (let row = -1; row < rows; row++) {
+    for (let col = -1; col < cols; col++) {
+      const offset = (row % 2 === 0) ? 0 : hexR * Math.sqrt(3) / 2;
+      const cx = col * hexR * Math.sqrt(3) + offset;
+      const cy = row * hexR * 1.5;
+      const d = Math.sqrt((txX-cx)**2 + (txY-cy)**2);
+      if (d < minD) { minD = d; txHexCX = cx; txHexCY = cy; }
+    }
+  }
+
+  drawHex(txHexCX, txHexCY, hexR, isDark ? '#2a2018' : '#FFF7E6', '#EF9F27', 1);
+
+  shops.forEach(shop => {
+    const sx = shop.x * W;
+    const sy = shop.y * H;
+    const c = colors[shop.type];
+    const r = 18;
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, Math.PI*2);
+    ctx.fillStyle = c.fill;
+    ctx.fill();
+    ctx.strokeStyle = selectedShop === shop ? '#E24B4A' : c.stroke;
+    ctx.lineWidth = selectedShop === shop ? 2.5 : 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = c.text;
+    ctx.font = '500 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const abbr = shop.name.split(' ').map(w=>w[0]).join('').slice(0,2);
+    ctx.fillText(abbr, sx, sy);
+
+    ctx.fillStyle = textPrimary;
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(shop.name.split(' ')[0], sx, sy + r + 3);
+  });
+
+  const tx = txn.x * W;
+  const ty = txn.y * H;
+  ctx.beginPath();
+  ctx.arc(tx, ty, 8, 0, Math.PI*2);
+  ctx.fillStyle = '#E24B4A';
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = '#791F1F';
+  ctx.font = '500 11px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('You paid ₹5,000', tx + 12, ty);
+
+  ctx.fillStyle = isDark ? 'rgba(239,159,39,0.15)' : 'rgba(239,159,39,0.08)';
+  ctx.strokeStyle = '#EF9F27';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4,3]);
+  ctx.beginPath();
+  ctx.arc(txHexCX, txHexCY, hexR * 0.92, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = isDark ? '#EF9F27' : '#854F0B';
+  ctx.font = '500 11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(res.name + ' cell', txHexCX, txHexCY - hexR + 14);
+}
+
+function scoreShop(shop) {
+  const nameMatch = shop.upi.toLowerCase().split(' ').some(w =>
+    txn.upi.toLowerCase().includes(w.slice(0,4))
+  ) ? 40 : (shop.type === 'clothing' ? 10 : 0);
+
+  const dist = Math.sqrt((shop.x - txn.x)**2 + (shop.y - txn.y)**2) * 500;
+  const distScore = Math.max(0, 35 - dist * 1.2);
+
+  const typeScore = shop.type === 'clothing' ? 15 : 0;
+  const timeScore = 10;
+
+  return { nameMatch, distScore: Math.round(distScore), typeScore, timeScore,
+    total: Math.min(100, Math.round(nameMatch + distScore + typeScore + timeScore)) };
+}
+
+function showInfo(shop) {
+  const s = scoreShop(shop);
+  const c = colors[shop.type];
+  const bar = (val, max, color) =>
+    `<div class="score-bar-bg"><div class="score-bar" style="width:${Math.round(val/max*100)}%;background:${color}"></div></div>`;
+
+  document.getElementById('info-card').innerHTML = `
+    <div class="info-row" style="margin-bottom:8px">
+      <span style="font-weight:500;font-size:14px;color:var(--color-text-primary)">${shop.name}</span>
+      <span class="pill pill-${shop.type}" style="font-size:11px">${shop.type}</span>
+    </div>
+    <div class="info-row"><span class="info-label">UPI name on receipt</span><span class="info-val" style="font-family:monospace;font-size:12px">${shop.upi}</span></div>
+    <div class="info-row"><span class="info-label">Transaction UPI</span><span class="info-val" style="font-family:monospace;font-size:12px">${txn.upi}</span></div>
+    <div style="border-top:0.5px solid var(--color-border-tertiary);margin:8px 0;padding-top:8px">
+      <div class="info-row"><span class="info-label">Name fuzzy match</span><span class="info-val">${s.nameMatch}/40</span></div>
+      ${bar(s.nameMatch, 40, c.stroke)}
+      <div class="info-row" style="margin-top:6px"><span class="info-label">Distance in cell</span><span class="info-val">${s.distScore}/35</span></div>
+      ${bar(s.distScore, 35, c.stroke)}
+      <div class="info-row" style="margin-top:6px"><span class="info-label">Place type match</span><span class="info-val">${s.typeScore}/15</span></div>
+      ${bar(s.typeScore, 15, c.stroke)}
+      <div class="info-row" style="margin-top:6px"><span class="info-label">Dwell time</span><span class="info-val">${s.timeScore}/10</span></div>
+      ${bar(s.timeScore, 10, c.stroke)}
+    </div>
+    <div class="info-row" style="margin-top:4px;border-top:0.5px solid var(--color-border-tertiary);padding-top:8px">
+      <span style="font-weight:500;color:var(--color-text-primary)">Confidence score</span>
+      <span style="font-weight:500;font-size:16px;color:${s.total>70?'#0F6E56':s.total>45?'#854F0B':'#A32D2D'}">${s.total}%</span>
+    </div>
+    <div style="margin-top:6px">
+      ${s.total > 70
+        ? '<span style="color:#0F6E56;font-size:12px">High confidence — auto-categorise as Clothing &amp; Apparel</span>'
+        : s.total > 45
+        ? '<span style="color:#854F0B;font-size:12px">Medium — show user a confirmation nudge</span>'
+        : '<span style="color:#A32D2D;font-size:12px">Low — prompt user to tag manually</span>'}
+    </div>`;
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+  const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+  const hit = shops.find(s => {
+    const sx = s.x * W; const sy = s.y * H;
+    return Math.sqrt((mx-sx)**2 + (my-sy)**2) < 22;
+  });
+  selectedShop = hit || null;
+  if (hit) showInfo(hit);
+  else document.getElementById('info-card').innerHTML = '<div class="info-row"><span class="info-label">Click a shop to see confidence scoring</span></div>';
+  draw();
+});
+
+const resSlider = document.getElementById('res-slider');
+const resLabel = document.getElementById('res-label');
+resSlider.addEventListener('input', () => {
+  currentRes = parseInt(resSlider.value) - 1;
+  resLabel.textContent = resolutions[currentRes].label;
+  draw();
+});
+
+const ro = new ResizeObserver(() => draw());
+ro.observe(canvas);
+draw();
+</script>
